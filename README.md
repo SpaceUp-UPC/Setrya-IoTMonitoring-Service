@@ -1,8 +1,6 @@
 # Setrya-IoTMonitoring-Service
 
-Microservicio **IoT Monitoring and Notifications** de Sentrya (SpaceUp). Recibe lecturas de dispositivos IoT (REST o MQTT), detecta valores fuera de rango, genera alertas y las notifica al usuario responsable. Implementa el bounded context descrito en el capítulo 4.2.5 del informe.
-
-Stack: Go (librería estándar `net/http` para la API), MySQL (`go-sql-driver/mysql`) y MQTT (`eclipse/paho.mqtt.golang`).
+Microservicio **IoT Monitoring and Notifications** de Sentrya (SpaceUp). Recibe lecturas de dispositivos IoT (REST o MQTT), detecta valores fuera de rango, genera alertas y las notifica al usuario responsable. 
 
 ## Estructura
 
