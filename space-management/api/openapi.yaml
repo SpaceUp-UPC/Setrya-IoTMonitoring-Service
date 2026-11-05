@@ -1,0 +1,126 @@
+openapi: 3.0.3
+info:
+  title: Sentrya Space Management API
+  version: 1.0.0
+  description: API para registrar, consultar y administrar la disponibilidad de espacios.
+servers:
+  - url: /api/v1
+paths:
+  /spaces:
+    post:
+      summary: Crear un espacio
+      operationId: createSpace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpaceInput'
+      responses:
+        '201':
+          description: Espacio creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Space'
+        '400': { description: Datos inválidos }
+  /spaces/{spaceId}:
+    parameters:
+      - $ref: '#/components/parameters/SpaceId'
+    get:
+      summary: Consultar un espacio
+      operationId: getSpace
+      responses:
+        '200':
+          description: Espacio encontrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Space' }
+        '404': { description: Espacio no encontrado }
+    put:
+      summary: Actualizar los datos principales
+      operationId: updateSpace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SpaceInput' }
+      responses:
+        '200': { description: Espacio actualizado }
+        '400': { description: Datos inválidos }
+        '404': { description: Espacio no encontrado }
+  /spaces/{spaceId}/availability:
+    parameters:
+      - $ref: '#/components/parameters/SpaceId'
+    patch:
+      summary: Publicar o pausar disponibilidad
+      operationId: setSpaceAvailability
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [active]
+              properties:
+                active: { type: boolean }
+      responses:
+        '204': { description: Disponibilidad actualizada }
+        '404': { description: Espacio no encontrado }
+  /owners/{ownerId}/spaces:
+    get:
+      summary: Listar espacios de un propietario
+      operationId: listSpacesByOwner
+      parameters:
+        - name: ownerId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Lista de espacios
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Space' }
+components:
+  parameters:
+    SpaceId:
+      name: spaceId
+      in: path
+      required: true
+      schema: { type: string }
+  schemas:
+    Location:
+      type: object
+      required: [address, district, city]
+      properties:
+        address: { type: string }
+        district: { type: string }
+        city: { type: string }
+    Dimensions:
+      type: object
+      required: [width, length]
+      properties:
+        width: { type: number, format: double, exclusiveMinimum: 0 }
+        length: { type: number, format: double, exclusiveMinimum: 0 }
+    SpaceInput:
+      type: object
+      required: [ownerId, name, location, dimensions]
+      properties:
+        ownerId: { type: string }
+        name: { type: string }
+        description: { type: string }
+        location: { $ref: '#/components/schemas/Location' }
+        dimensions: { $ref: '#/components/schemas/Dimensions' }
+    Space:
+      allOf:
+        - $ref: '#/components/schemas/SpaceInput'
+        - type: object
+          required: [id, status, createdAt, updatedAt]
+          properties:
+            id: { type: string, format: uuid }
+            status: { type: string, enum: [active, paused] }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
