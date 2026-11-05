@@ -1,0 +1,41 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: iot_monitoring
+      MYSQL_USER: sentrya
+      MYSQL_PASSWORD: sentrya
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      retries: 20
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    command: mosquitto -c /mosquitto-no-auth.conf
+    ports:
+      - "1883:1883"
+
+  iot-monitoring:
+    build:
+      context: ..
+    environment:
+      HTTP_ADDR: ":8080"
+      MYSQL_DSN: sentrya:sentrya@tcp(mysql:3306)/iot_monitoring
+      MQTT_BROKER_URL: tcp://mosquitto:1883
+      MQTT_TOPIC: sentrya/+/+/readings
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+
+volumes:
+  mysql-data:

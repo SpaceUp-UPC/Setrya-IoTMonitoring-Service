@@ -1,0 +1,226 @@
+openapi: 3.0.3
+info:
+  title: Sentrya - IoT Monitoring and Notifications
+  version: 0.1.0
+  description: Recepción de lecturas IoT, detección de valores fuera de rango y gestión de alertas.
+paths:
+  /health:
+    get:
+      summary: Estado del servicio
+      responses:
+        "200": { description: OK }
+  /api/v1/devices:
+    post:
+      summary: Registrar un dispositivo (nace inactivo)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterDevice" }
+      responses:
+        "201":
+          description: Dispositivo creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/devices/{deviceId}/activate:
+    patch:
+      summary: Activar un dispositivo
+      parameters: [{ $ref: "#/components/parameters/deviceId" }]
+      responses:
+        "200":
+          description: Dispositivo activado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/devices/{deviceId}/deactivate:
+    patch:
+      summary: Desactivar un dispositivo
+      parameters: [{ $ref: "#/components/parameters/deviceId" }]
+      responses:
+        "200":
+          description: Dispositivo desactivado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/readings:
+    post:
+      summary: Ingresar una lectura de un dispositivo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IngestReading" }
+      responses:
+        "201":
+          description: Lectura registrada; incluye la alerta si estaba fuera de rango
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IngestResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/spaces/{spaceId}/readings:
+    get:
+      summary: Lecturas de un espacio (más recientes primero)
+      parameters:
+        - { $ref: "#/components/parameters/spaceId" }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+      responses:
+        "200":
+          description: Lecturas
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Reading" }
+  /api/v1/spaces/{spaceId}/devices:
+    get:
+      summary: Dispositivos de un espacio
+      parameters: [{ $ref: "#/components/parameters/spaceId" }]
+      responses:
+        "200":
+          description: Dispositivos
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Device" }
+  /api/v1/spaces/{spaceId}/alerts:
+    get:
+      summary: Alertas de un espacio
+      parameters:
+        - { $ref: "#/components/parameters/spaceId" }
+        - { name: status, in: query, schema: { type: string, enum: [created, sent, acknowledged, closed] } }
+      responses:
+        "200":
+          description: Alertas
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Alert" }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/spaces/{spaceId}/monitoring-summary:
+    get:
+      summary: Resumen del monitoreo de un espacio
+      parameters: [{ $ref: "#/components/parameters/spaceId" }]
+      responses:
+        "200":
+          description: Resumen
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitoringSummary" }
+  /api/v1/alerts/{alertId}/acknowledge:
+    patch:
+      summary: Reconocer una alerta
+      parameters: [{ $ref: "#/components/parameters/alertId" }]
+      responses:
+        "200":
+          description: Alerta reconocida
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Alert" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/alerts/{alertId}/close:
+    patch:
+      summary: Cerrar una alerta
+      parameters: [{ $ref: "#/components/parameters/alertId" }]
+      responses:
+        "200":
+          description: Alerta cerrada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Alert" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+components:
+  parameters:
+    spaceId: { name: spaceId, in: path, required: true, schema: { type: string } }
+    deviceId: { name: deviceId, in: path, required: true, schema: { type: string } }
+    alertId: { name: alertId, in: path, required: true, schema: { type: string } }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties: { error: { type: string } }
+  schemas:
+    MetricType: { type: string, enum: [temperature, voltage, sound] }
+    Threshold:
+      type: object
+      required: [metricType, minValue, maxValue]
+      properties:
+        metricType: { $ref: "#/components/schemas/MetricType" }
+        minValue: { type: number }
+        maxValue: { type: number }
+        unit: { type: string }
+    RegisterDevice:
+      type: object
+      required: [spaceId, name]
+      properties:
+        spaceId: { type: string }
+        name: { type: string }
+        thresholds:
+          type: array
+          items: { $ref: "#/components/schemas/Threshold" }
+    Device:
+      type: object
+      properties:
+        id: { type: string }
+        spaceId: { type: string }
+        name: { type: string }
+        active: { type: boolean }
+        thresholds:
+          type: array
+          items: { $ref: "#/components/schemas/Threshold" }
+        createdAt: { type: string, format: date-time }
+    IngestReading:
+      type: object
+      required: [deviceId, metricType, value, unit]
+      properties:
+        deviceId: { type: string }
+        metricType: { $ref: "#/components/schemas/MetricType" }
+        value: { type: number }
+        unit: { type: string }
+    Reading:
+      type: object
+      properties:
+        id: { type: string }
+        deviceId: { type: string }
+        metricType: { $ref: "#/components/schemas/MetricType" }
+        value: { type: number }
+        unit: { type: string }
+        receivedAt: { type: string, format: date-time }
+        status: { type: string, enum: [received, validated, out_of_range] }
+    Alert:
+      type: object
+      properties:
+        id: { type: string }
+        readingId: { type: string }
+        deviceId: { type: string }
+        spaceId: { type: string }
+        message: { type: string }
+        severity: { type: string, enum: [low, medium, high, critical] }
+        status: { type: string, enum: [created, sent, acknowledged, closed] }
+        createdAt: { type: string, format: date-time }
+        acknowledgedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time }
+    IngestResult:
+      type: object
+      properties:
+        reading: { $ref: "#/components/schemas/Reading" }
+        alert: { $ref: "#/components/schemas/Alert" }
+    MonitoringSummary:
+      type: object
+      properties:
+        spaceId: { type: string }
+        recentReadings: { type: integer }
+        activeAlerts: { type: integer }
+        status: { type: string, enum: [normal, attention] }
