@@ -22,9 +22,12 @@ import (
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		fatal(log, "load configuration", err)
+	}
 
-	db, err := mysqlrepo.Open(cfg.MySQLDSN)
+	db, err := mysqlrepo.Open(cfg.MySQLDSN, cfg.MySQLTLS)
 	if err != nil {
 		fatal(log, "open database", err)
 	}
@@ -52,7 +55,23 @@ func main() {
 		Notifier: dispatcher, Normalizer: normalizer.New(), Now: now, Log: log,
 	}
 
-	router := rest.NewRouter(
+	// El adaptador MQTT recibe las lecturas del Edge y publica hacia él.
+	var publisher application.EdgePublisher = mqtt.DisabledPublisher{}
+	if cfg.MQTTURL != "" {
+		adapter := mqtt.NewAdapter(mqtt.Config{
+			BrokerURL: cfg.MQTTURL, ClientID: cfg.MQTTClientID, Username: cfg.MQTTUser,
+			Password: cfg.MQTTPass, Topic: cfg.MQTTTopic,
+		}, ingest, log)
+		if err := adapter.Start(); err != nil {
+			fatal(log, "start mqtt adapter", err)
+		}
+		defer adapter.Stop()
+		publisher = adapter
+	} else {
+		log.Warn("MQTT_BROKER_URL not set: MQTT ingestion and edge commands disabled")
+	}
+
+	var handler http.Handler = rest.NewRouter(
 		&rest.IoTMonitoringController{
 			Ingest:   ingest,
 			Readings: &application.GetReadingsBySpaceQueryHandler{Readings: readings},
@@ -63,6 +82,7 @@ func main() {
 			Alerts:      &application.GetAlertsBySpaceQueryHandler{Alerts: alerts},
 			Acknowledge: &application.AcknowledgeAlertCommandHandler{Alerts: alerts, Now: now},
 			Close:       &application.CloseAlertCommandHandler{Alerts: alerts, Now: now},
+			Validate:    &application.ValidateSecurityAlertCommandHandler{Alerts: alerts, Publisher: publisher, Now: now},
 			Log:         log,
 		},
 		&rest.DeviceController{
@@ -71,22 +91,21 @@ func main() {
 			SetActive: &application.SetDeviceActiveCommandHandler{Devices: devices},
 			Log:       log,
 		},
+		&rest.EdgeController{
+			Command: &application.SendEdgeCommandCommandHandler{Publisher: publisher},
+			Config:  &application.PushEdgeConfigCommandHandler{Publisher: publisher},
+			Log:     log,
+		},
 	)
-
-	if cfg.MQTTURL != "" {
-		adapter := mqtt.NewAdapter(mqtt.Config{
-			BrokerURL: cfg.MQTTURL, ClientID: "sentrya-iot-monitoring", Username: cfg.MQTTUser,
-			Password: cfg.MQTTPass, Topic: cfg.MQTTTopic,
-		}, ingest, log)
-		if err := adapter.Start(); err != nil {
-			fatal(log, "start mqtt adapter", err)
-		}
-		defer adapter.Stop()
+	if cfg.AuthDisabled {
+		log.Warn("AUTH_DISABLED=true: the API accepts unauthenticated requests")
 	} else {
-		log.Warn("MQTT_BROKER_URL not set: MQTT ingestion disabled")
+		handler = rest.RequireJWT([]byte(cfg.JWTSecret), now, handler)
 	}
+	// CORS va por fuera: el preflight del navegador llega sin token.
+	handler = rest.CORS(cfg.CORSOrigins, handler)
 
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		log.Info("http server listening", "addr", cfg.HTTPAddr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -108,7 +127,7 @@ func main() {
 // waitForDB reintenta el ping para tolerar que MySQL arranque después (docker compose).
 func waitForDB(ping func(context.Context) error, log *slog.Logger) error {
 	var err error
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		err = ping(ctx)
 		cancel()

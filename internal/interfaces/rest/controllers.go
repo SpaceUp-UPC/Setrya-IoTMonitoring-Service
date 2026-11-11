@@ -40,6 +40,15 @@ type (
 	devicesHandler interface {
 		Handle(context.Context, application.GetDevicesBySpaceQuery) ([]application.DeviceDto, error)
 	}
+	validateAlertHandler interface {
+		Handle(context.Context, application.ValidateSecurityAlertCommand) (application.AlertDto, error)
+	}
+	edgeCommandHandler interface {
+		Handle(context.Context, application.SendEdgeCommandCommand) (application.EdgeCommandDto, error)
+	}
+	edgeConfigHandler interface {
+		Handle(context.Context, application.PushEdgeConfigCommand) error
+	}
 	setActiveHandler interface {
 		Activate(context.Context, application.ActivateDeviceCommand) (application.DeviceDto, error)
 		Deactivate(context.Context, application.DeactivateDeviceCommand) (application.DeviceDto, error)
@@ -70,7 +79,11 @@ func (c *IoTMonitoringController) PostReading(w http.ResponseWriter, r *http.Req
 		writeError(w, c.Log, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, IngestResultResourceAssembler(result))
+	status := http.StatusCreated
+	if result.Duplicate {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, IngestResultResourceAssembler(result))
 }
 
 // GET /api/v1/spaces/{spaceId}/readings?limit=
@@ -103,6 +116,7 @@ type AlertController struct {
 	Alerts      alertsHandler
 	Acknowledge ackHandler
 	Close       closeHandler
+	Validate    validateAlertHandler
 	Log         *slog.Logger
 }
 
@@ -142,6 +156,56 @@ func (c *AlertController) PatchClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, AlertResourceFromEntityAssembler(dto))
+}
+
+// POST /api/v1/alerts/{alertId}/validation
+func (c *AlertController) PostValidation(w http.ResponseWriter, r *http.Request) {
+	var res ValidateAlertResource
+	if !decode(w, r, &res) {
+		return
+	}
+	dto, err := c.Validate.Handle(r.Context(), ValidateSecurityAlertCommandFromResourceAssembler(r.PathValue("alertId"), res))
+	if err != nil {
+		writeError(w, c.Log, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, AlertResourceFromEntityAssembler(dto))
+}
+
+// EdgeController publica hacia la Edge Application las órdenes a actuadores
+// y la configuración de umbrales.
+type EdgeController struct {
+	Command edgeCommandHandler
+	Config  edgeConfigHandler
+	Log     *slog.Logger
+}
+
+// POST /api/v1/spaces/{spaceId}/commands/{target}
+func (c *EdgeController) PostCommand(w http.ResponseWriter, r *http.Request) {
+	var res EdgeCommandResource
+	if !decode(w, r, &res) {
+		return
+	}
+	cmd := SendEdgeCommandCommandFromResourceAssembler(r.PathValue("spaceId"), r.PathValue("target"), res)
+	dto, err := c.Command.Handle(r.Context(), cmd)
+	if err != nil {
+		writeError(w, c.Log, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, EdgeCommandAcceptedResourceAssembler(dto))
+}
+
+// PUT /api/v1/spaces/{spaceId}/edge-config
+func (c *EdgeController) PutConfig(w http.ResponseWriter, r *http.Request) {
+	var raw json.RawMessage
+	if !decode(w, r, &raw) {
+		return
+	}
+	if err := c.Config.Handle(r.Context(), application.PushEdgeConfigCommand{SpaceID: r.PathValue("spaceId"), Config: raw}); err != nil {
+		writeError(w, c.Log, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // DeviceController expone el registro y activación de dispositivos. El
@@ -223,8 +287,12 @@ func writeError(w http.ResponseWriter, log *slog.Logger, err error) {
 		writeJSON(w, http.StatusBadRequest, ErrorResource{Error: err.Error()})
 	case errors.Is(err, domain.ErrDeviceNotFound), errors.Is(err, domain.ErrAlertNotFound):
 		writeJSON(w, http.StatusNotFound, ErrorResource{Error: err.Error()})
-	case errors.Is(err, domain.ErrDeviceInactive), errors.Is(err, domain.ErrInvalidTransition):
+	case errors.Is(err, domain.ErrDeviceInactive), errors.Is(err, domain.ErrInvalidTransition),
+		errors.Is(err, domain.ErrDeviceExists), errors.Is(err, domain.ErrNotValidatable):
 		writeJSON(w, http.StatusConflict, ErrorResource{Error: err.Error()})
+	case errors.Is(err, domain.ErrBrokerUnavailable):
+		log.Warn("edge publish failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, ErrorResource{Error: domain.ErrBrokerUnavailable.Error()})
 	default:
 		log.Error("request failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, ErrorResource{Error: "internal error"})

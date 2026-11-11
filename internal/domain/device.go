@@ -17,15 +17,22 @@ type IoTDevice struct {
 	CreatedAt  time.Time
 }
 
-// NewIoTDevice registra un dispositivo. Nace inactivo: el informe indica que
-// la activación del servicio depende de Payment Management.
+// NewIoTDevice registra un dispositivo, inactivo hasta que se active.
 //
-// TODO(faltante): definir quién dispara la activación (Payments o el
-// implementador) y si el dispositivo debe validar que SpaceID exista en
-// Space Management.
-func NewIoTDevice(spaceID, name string, thresholds map[MetricType]ThresholdRange, now time.Time) (*IoTDevice, error) {
-	if strings.TrimSpace(spaceID) == "" {
-		return nil, fmt.Errorf("%w: spaceId is required", ErrInvalid)
+// id es opcional: el Edge publica en nombre de las ESP32 y necesita conocer
+// el deviceId de antemano, así que se aceptan ids acordados (por ejemplo
+// "space1-temperature"). Con id vacío se genera un UUID.
+//
+// TODO(faltante): falta validar que SpaceID exista en Space Management, cuyo
+// servicio todavía no está publicado.
+func NewIoTDevice(id, spaceID, name string, thresholds map[MetricType]ThresholdRange, now time.Time) (*IoTDevice, error) {
+	if id == "" {
+		id = NewID()
+	} else if err := ValidateID("id", id); err != nil {
+		return nil, err
+	}
+	if err := ValidateID("spaceId", spaceID); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(name) == "" {
 		return nil, fmt.Errorf("%w: name is required", ErrInvalid)
@@ -34,7 +41,7 @@ func NewIoTDevice(spaceID, name string, thresholds map[MetricType]ThresholdRange
 		thresholds = map[MetricType]ThresholdRange{}
 	}
 	return &IoTDevice{
-		ID:         NewID(),
+		ID:         id,
 		SpaceID:    spaceID,
 		Name:       name,
 		Thresholds: thresholds,

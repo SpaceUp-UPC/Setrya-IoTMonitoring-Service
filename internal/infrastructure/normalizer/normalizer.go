@@ -10,19 +10,32 @@ import (
 )
 
 // ReadingNormalizerService limpia y estandariza los valores recibidos desde
-// sensores: normaliza el tipo de métrica y convierte la unidad a la canónica
-// (°C, V, dB).
+// sensores: normaliza el tipo de métrica, convierte la unidad a la canónica
+// (°C, %, V, dB, event) y valida el estado local que envía el Edge.
 type ReadingNormalizerService struct{}
 
 func New() *ReadingNormalizerService { return &ReadingNormalizerService{} }
 
 func (ReadingNormalizerService) Normalize(cmd application.IngestReadingCommand) (application.IngestReadingCommand, error) {
 	cmd.DeviceID = strings.TrimSpace(cmd.DeviceID)
+	cmd.ReadingID = strings.TrimSpace(cmd.ReadingID)
 	cmd.MetricType = strings.ToLower(strings.TrimSpace(cmd.MetricType))
+	cmd.Reason = clip(cmd.Reason, 64)
+	cmd.EventID = clip(cmd.EventID, 64)
+	cmd.EvidenceRef = clip(cmd.EvidenceRef, 255)
 	unit := strings.ToLower(strings.TrimSpace(cmd.Unit))
 
-	switch domain.MetricType(cmd.MetricType) {
-	case domain.MetricTemperature:
+	switch state := domain.LocalState(strings.ToUpper(strings.TrimSpace(cmd.LocalState))); state {
+	case domain.LocalStateNone, domain.LocalStateNormal, domain.LocalStateWarning, domain.LocalStateCritical:
+		cmd.LocalState = string(state)
+	default:
+		// Un estado desconocido no invalida la lectura; simplemente no se usa.
+		cmd.LocalState = ""
+	}
+
+	metric := domain.MetricType(cmd.MetricType)
+	switch {
+	case metric == domain.MetricTemperature:
 		switch unit {
 		case "c", "°c", "celsius", "":
 			cmd.Unit = "°C"
@@ -35,17 +48,36 @@ func (ReadingNormalizerService) Normalize(cmd application.IngestReadingCommand) 
 		default:
 			return cmd, fmt.Errorf("%w: unsupported temperature unit %q", domain.ErrInvalid, cmd.Unit)
 		}
-	case domain.MetricVoltage:
+	case metric == domain.MetricHumidity:
+		if unit != "%" && unit != "%rh" && unit != "percent" && unit != "" {
+			return cmd, fmt.Errorf("%w: unsupported humidity unit %q", domain.ErrInvalid, cmd.Unit)
+		}
+		cmd.Unit = "%"
+	case metric == domain.MetricVoltage:
 		if unit != "v" && unit != "volt" && unit != "volts" && unit != "" {
 			return cmd, fmt.Errorf("%w: unsupported voltage unit %q", domain.ErrInvalid, cmd.Unit)
 		}
 		cmd.Unit = "V"
-	case domain.MetricSound:
+	case metric == domain.MetricSound:
 		if unit != "db" && unit != "" {
 			return cmd, fmt.Errorf("%w: unsupported sound unit %q", domain.ErrInvalid, cmd.Unit)
 		}
 		cmd.Unit = "dB"
+	case metric.IsEvent():
+		if unit != domain.EventUnit && unit != "" {
+			return cmd, fmt.Errorf("%w: unsupported event unit %q", domain.ErrInvalid, cmd.Unit)
+		}
+		cmd.Unit = domain.EventUnit
 	}
 	cmd.Value = math.Round(cmd.Value*100) / 100
 	return cmd, nil
+}
+
+// clip recorta un texto libre que llega de fuera al largo de su columna.
+func clip(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if r := []rune(s); len(r) > max {
+		return string(r[:max])
+	}
+	return s
 }

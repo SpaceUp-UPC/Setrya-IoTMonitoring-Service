@@ -2,7 +2,9 @@ package mysql
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -13,20 +15,53 @@ import (
 )
 
 // Open abre la conexión a MySQL (UTC y parseTime activados).
-func Open(dsn string) (*sql.DB, error) {
-	cfg, err := driver.ParseDSN(dsn)
+//
+// dsn admite el formato del driver ("user:pass@tcp(host:3306)/db") o una URL
+// "mysql://user:pass@host:3306/db", que es como la entregan los proveedores
+// gestionados. tlsMode fija el TLS: "" (lo que indique el dsn), "true",
+// "skip-verify" (proveedores con CA propia) o "preferred".
+func Open(dsn, tlsMode string) (*sql.DB, error) {
+	cfg, err := parseDSN(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse mysql dsn: %w", err)
 	}
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
+	if tlsMode != "" {
+		cfg.TLSConfig = tlsMode
+	}
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(20)
+	db.SetMaxOpenConns(10)
 	db.SetConnMaxLifetime(5 * time.Minute)
 	return db, nil
+}
+
+func parseDSN(dsn string) (*driver.Config, error) {
+	if !strings.HasPrefix(dsn, "mysql://") {
+		return driver.ParseDSN(dsn)
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		// El error de url.Parse incluye el dsn completo, con la contraseña.
+		return nil, errors.New("invalid mysql:// url")
+	}
+	cfg := driver.NewConfig()
+	cfg.Net = "tcp"
+	cfg.Addr = u.Host
+	if u.Port() == "" {
+		cfg.Addr = u.Hostname() + ":3306"
+	}
+	cfg.User = u.User.Username()
+	cfg.Passwd, _ = u.User.Password()
+	cfg.DBName = strings.TrimPrefix(u.Path, "/")
+	switch strings.ToUpper(u.Query().Get("ssl-mode")) {
+	case "REQUIRED", "VERIFY_CA", "VERIFY_IDENTITY":
+		cfg.TLSConfig = "true"
+	}
+	return cfg, nil
 }
 
 // Migrate aplica en orden las migraciones embebidas que aún no se ejecutaron.
@@ -51,14 +86,14 @@ func Migrate(db *sql.DB) error {
 		if err == nil {
 			continue
 		}
-		if err != sql.ErrNoRows {
+		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		body, err := migrations.FS.ReadFile(name)
 		if err != nil {
 			return err
 		}
-		for _, stmt := range strings.Split(string(body), ";") {
+		for stmt := range strings.SplitSeq(string(body), ";") {
 			if strings.TrimSpace(stmt) == "" {
 				continue
 			}
