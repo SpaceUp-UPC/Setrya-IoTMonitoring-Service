@@ -19,7 +19,7 @@ services:
     image: eclipse-mosquitto:2
     command: mosquitto -c /mosquitto-no-auth.conf
     ports:
-      - "1883:1883"
+      - "${MQTT_PORT:-1883}:1883"
 
   iot-monitoring:
     build:
@@ -29,8 +29,10 @@ services:
       MYSQL_DSN: sentrya:sentrya@tcp(mysql:3306)/iot_monitoring
       MQTT_BROKER_URL: tcp://mosquitto:1883
       MQTT_TOPIC: sentrya/+/+/readings
+      # Solo para desarrollo local: en despliegue se usa JWT_SECRET (el de IAM).
+      AUTH_DISABLED: "true"
     ports:
-      - "8080:8080"
+      - "${HTTP_PORT:-8080}:8080"
     depends_on:
       mysql:
         condition: service_healthy

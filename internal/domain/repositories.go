@@ -12,6 +12,8 @@ type IIoTDeviceRepository interface {
 // IReadingRepository almacena y consulta lecturas recibidas.
 type IReadingRepository interface {
 	Save(ctx context.Context, reading *Reading) error
+	// FindByID devuelve ErrReadingNotFound si la lectura no existe.
+	FindByID(ctx context.Context, id string) (*Reading, error)
 	// FindBySpace devuelve las lecturas más recientes primero.
 	FindBySpace(ctx context.Context, spaceID string, limit int) ([]*Reading, error)
 }
@@ -22,4 +24,8 @@ type IAlertRepository interface {
 	FindByID(ctx context.Context, id string) (*Alert, error)
 	// FindBySpace devuelve las alertas más recientes primero; status nil no filtra.
 	FindBySpace(ctx context.Context, spaceID string, status *AlertStatus) ([]*Alert, error)
+	// FindOpenByDevice devuelve las alertas no cerradas del dispositivo y la métrica.
+	FindOpenByDevice(ctx context.Context, deviceID string, metric MetricType) ([]*Alert, error)
+	// FindByReading devuelve la alerta que originó la lectura, o nil si no hubo.
+	FindByReading(ctx context.Context, readingID string) (*Alert, error)
 }

@@ -16,9 +16,21 @@ type Reading struct {
 	Unit       string
 	ReceivedAt time.Time
 	Status     ReadingStatus
+
+	// Datos opcionales que agrega el Edge.
+	MeasuredAt *time.Time
+	LocalState LocalState
 }
 
-func NewReading(deviceID string, metric MetricType, value float64, unit string, now time.Time) (*Reading, error) {
+// ReadingDetails agrupa los campos opcionales del contrato del Edge.
+type ReadingDetails struct {
+	// ID es el readingId del Edge; permite descartar reenvíos (QoS 1). Vacío genera uno.
+	ID         string
+	MeasuredAt *time.Time
+	LocalState LocalState
+}
+
+func NewReading(deviceID string, metric MetricType, value float64, unit string, details ReadingDetails, now time.Time) (*Reading, error) {
 	if strings.TrimSpace(deviceID) == "" {
 		return nil, fmt.Errorf("%w: deviceId is required", ErrInvalid)
 	}
@@ -28,14 +40,22 @@ func NewReading(deviceID string, metric MetricType, value float64, unit string, 
 	if strings.TrimSpace(unit) == "" {
 		return nil, fmt.Errorf("%w: unit is required", ErrInvalid)
 	}
+	id := details.ID
+	if id == "" {
+		id = NewID()
+	} else if err := ValidateID("readingId", id); err != nil {
+		return nil, err
+	}
 	return &Reading{
-		ID:         NewID(),
+		ID:         id,
 		DeviceID:   deviceID,
 		Metric:     metric,
 		Value:      value,
 		Unit:       unit,
 		ReceivedAt: now,
 		Status:     ReadingReceived,
+		MeasuredAt: details.MeasuredAt,
+		LocalState: details.LocalState,
 	}, nil
 }
 

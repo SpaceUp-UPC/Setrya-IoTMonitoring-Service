@@ -1,0 +1,53 @@
+# Blueprint de Render: New > Blueprint y elegir este repositorio.
+# Los valores con "sync: false" se piden en el panel al crear el servicio y no
+# se guardan en el repositorio.
+services:
+  - type: web
+    name: sentrya-iot-monitoring
+    runtime: docker
+    plan: free
+    branch: main
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Base de datos MySQL externa (Render no ofrece MySQL gestionado).
+      # Formato: mysql://usuario:clave@host:puerto/base
+      - key: MYSQL_DSN
+        sync: false
+      # "true" si el proveedor usa un certificado público; "skip-verify" si
+      # usa una CA propia (por ejemplo Aiven).
+      - key: MYSQL_TLS
+        value: "true"
+
+      # Broker MQTT en la nube, el mismo al que publica el Edge.
+      # Formato con TLS: ssl://host:8883
+      - key: MQTT_BROKER_URL
+        sync: false
+      - key: MQTT_USERNAME
+        sync: false
+      - key: MQTT_PASSWORD
+        sync: false
+      - key: MQTT_TOPIC
+        value: sentrya/+/+/readings
+      - key: MQTT_CLIENT_ID
+        value: sentrya-iot-monitoring
+
+      # El mismo authorization.jwt.secret del microservicio IAM.
+      - key: JWT_SECRET
+        sync: false
+      # Orígenes de la aplicación web, separados por coma.
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+
+      # Correo de alertas (opcional): sin SMTP_HOST solo se registran en el log.
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: ALERT_RECIPIENT
+        sync: false

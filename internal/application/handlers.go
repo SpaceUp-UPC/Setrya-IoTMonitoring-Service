@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -12,10 +13,12 @@ import (
 type Clock func() time.Time
 
 // IngestResult es la salida de IngestReadingCommandHandler; Alert es nil si
-// la lectura estaba dentro del rango.
+// la lectura no generó una alerta.
 type IngestResult struct {
 	Reading ReadingDto
 	Alert   *AlertDto
+	// Duplicate indica que la lectura ya se había recibido antes.
+	Duplicate bool
 }
 
 type IngestReadingCommandHandler struct {
@@ -31,7 +34,11 @@ type IngestReadingCommandHandler struct {
 }
 
 // Handle valida que el dispositivo exista y esté activo, registra la lectura,
-// evalúa si está fuera de rango y, si corresponde, genera y notifica una alerta.
+// evalúa si es anómala y, si corresponde, genera y notifica una alerta.
+//
+// El Edge publica con QoS 1 y reenvía desde su outbox, así que una lectura
+// puede llegar repetida: si su readingId ya existe se devuelve lo guardado
+// sin crear nada nuevo.
 func (h *IngestReadingCommandHandler) Handle(ctx context.Context, cmd IngestReadingCommand) (IngestResult, error) {
 	cmd, err := h.Normalizer.Normalize(cmd)
 	if err != nil {
@@ -41,12 +48,18 @@ func (h *IngestReadingCommandHandler) Handle(ctx context.Context, cmd IngestRead
 	if err != nil {
 		return IngestResult{}, err
 	}
+	if cmd.ReadingID != "" {
+		if dup, found, err := h.duplicate(ctx, cmd.ReadingID); err != nil || found {
+			return dup, err
+		}
+	}
 	device, err := h.Devices.FindByID(ctx, cmd.DeviceID)
 	if err != nil {
 		return IngestResult{}, err
 	}
 	now := h.Now()
-	reading, err := domain.NewReading(cmd.DeviceID, metric, cmd.Value, cmd.Unit, now)
+	details := domain.ReadingDetails{ID: cmd.ReadingID, MeasuredAt: cmd.MeasuredAt, LocalState: domain.LocalState(cmd.LocalState)}
+	reading, err := domain.NewReading(cmd.DeviceID, metric, cmd.Value, cmd.Unit, details, now)
 	if err != nil {
 		return IngestResult{}, err
 	}
@@ -68,7 +81,15 @@ func (h *IngestReadingCommandHandler) Handle(ctx context.Context, cmd IngestRead
 		return result, nil
 	}
 
-	alert := h.Monitoring.CreateAlert(device, reading, threshold, now)
+	open, err := h.Alerts.FindOpenByDevice(ctx, device.ID, metric)
+	if err != nil {
+		return IngestResult{}, fmt.Errorf("find open alerts: %w", err)
+	}
+	if !h.Policy.ShouldRaise(metric, h.Policy.EvaluateSeverity(reading, threshold), open) {
+		return result, nil
+	}
+	event := domain.EventDetails{Reason: cmd.Reason, EventID: cmd.EventID, EvidenceRef: cmd.EvidenceRef}
+	alert := h.Monitoring.CreateAlert(device, reading, threshold, event, now)
 	if err := h.Alerts.Save(ctx, alert); err != nil {
 		return IngestResult{}, fmt.Errorf("save alert: %w", err)
 	}
@@ -76,6 +97,30 @@ func (h *IngestReadingCommandHandler) Handle(ctx context.Context, cmd IngestRead
 	dto := ToAlertDto(alert)
 	result.Alert = &dto
 	return result, nil
+}
+
+// duplicate devuelve el resultado ya guardado para un readingId repetido.
+func (h *IngestReadingCommandHandler) duplicate(ctx context.Context, readingID string) (IngestResult, bool, error) {
+	if err := domain.ValidateID("readingId", readingID); err != nil {
+		return IngestResult{}, false, err
+	}
+	reading, err := h.Readings.FindByID(ctx, readingID)
+	if errors.Is(err, domain.ErrReadingNotFound) {
+		return IngestResult{}, false, nil
+	}
+	if err != nil {
+		return IngestResult{}, false, fmt.Errorf("find reading: %w", err)
+	}
+	result := IngestResult{Reading: ToReadingDto(reading), Duplicate: true}
+	alert, err := h.Alerts.FindByReading(ctx, readingID)
+	if err != nil {
+		return IngestResult{}, false, fmt.Errorf("find alert: %w", err)
+	}
+	if alert != nil {
+		dto := ToAlertDto(alert)
+		result.Alert = &dto
+	}
+	return result, true, nil
 }
 
 // dispatch no falla la ingesta: si el envío falla, la alerta queda en estado
@@ -139,6 +184,8 @@ type RegisterDeviceCommandHandler struct {
 	Now     Clock
 }
 
+// Handle registra el dispositivo; con un id acordado que ya existe devuelve
+// ErrDeviceExists en lugar de sobrescribirlo.
 func (h *RegisterDeviceCommandHandler) Handle(ctx context.Context, cmd RegisterDeviceCommand) (DeviceDto, error) {
 	thresholds := make(map[domain.MetricType]domain.ThresholdRange, len(cmd.Thresholds))
 	for _, in := range cmd.Thresholds {
@@ -152,9 +199,20 @@ func (h *RegisterDeviceCommandHandler) Handle(ctx context.Context, cmd RegisterD
 		}
 		thresholds[metric] = tr
 	}
-	device, err := domain.NewIoTDevice(cmd.SpaceID, cmd.Name, thresholds, h.Now())
+	device, err := domain.NewIoTDevice(cmd.ID, cmd.SpaceID, cmd.Name, thresholds, h.Now())
 	if err != nil {
 		return DeviceDto{}, err
+	}
+	if cmd.ID != "" {
+		switch _, err := h.Devices.FindByID(ctx, cmd.ID); {
+		case err == nil:
+			return DeviceDto{}, domain.ErrDeviceExists
+		case !errors.Is(err, domain.ErrDeviceNotFound):
+			return DeviceDto{}, fmt.Errorf("find device: %w", err)
+		}
+	}
+	if cmd.Active {
+		device.Activate()
 	}
 	if err := h.Devices.Save(ctx, device); err != nil {
 		return DeviceDto{}, fmt.Errorf("save device: %w", err)
